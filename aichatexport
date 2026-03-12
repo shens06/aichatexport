@@ -137,7 +137,10 @@ class AIChatManager:
                                        selectforeground='black')
         self.conv_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.conv_listbox.bind('<<ListboxSelect>>', self.on_select_conversation)
-        
+        self.conv_listbox.bind('<Motion>', self._on_list_motion)
+        self.conv_listbox.bind('<Leave>', lambda e: self.status_var.set(
+            f"就绪 - 共 {len(self.all_conversations)} 个对话"))
+
         scrollbar.config(command=self.conv_listbox.yview)
         
         # 中间：对话详情
@@ -671,25 +674,38 @@ class AIChatManager:
             self.filtered_indices.append(i)
             self.add_to_list(conv)
     
+    # 平台缩写映射
+    _PLATFORM_ABBR = {
+        'ChatGPT': 'GPT', 'DeepSeek': 'DS', 'Claude': 'CL',
+        'Gemini': 'GM', 'Doubao': '豆包', 'Kimi': 'Kimi',
+    }
+
     def add_to_list(self, conv):
         """添加到列表（带标记）"""
         title = conv.get('title', '无标题')
         platform = conv.get('platform', '未知')
-        time_str = conv.get('time', '')[:10] if conv.get('time') else ''
-        
-        # 限制标题长度
-        if len(title) > 30:
-            title = title[:27] + "..."
-        
-        display = f"[{platform}] {title}"
-        if time_str:
-            display += f" ({time_str})"
-        
+        abbr = self._PLATFORM_ABBR.get(platform, platform[:4])
+
+        # 限制标题长度（去掉日期后可显示更多）
+        if len(title) > 22:
+            title = title[:20] + "…"
+
+        display = f"[{abbr}] {title}"
+
         # 收藏标记
         if conv.get('id') in self.favorites:
             display = "⭐ " + display
-        
+
         self.conv_listbox.insert(tk.END, display)
+
+    def _on_list_motion(self, event):
+        """鼠标悬停时在状态栏显示完整标题和日期"""
+        idx = self.conv_listbox.nearest(event.y)
+        if 0 <= idx < len(self.filtered_indices):
+            conv = self.all_conversations[self.filtered_indices[idx]]
+            title = conv.get('title', '')
+            t = conv.get('time', '')[:10]
+            self.status_var.set(f"{conv.get('platform','')}  {t}  {title}")
     
     def conversation_matches(self, conv, keyword):
         """检查对话是否匹配关键词（带缓存）"""
