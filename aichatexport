@@ -260,7 +260,7 @@ class AIChatManager:
                     convs = self.extract_conversations(data, platform, file)
                     self.all_conversations.extend(convs)
                     imported += len(convs)
-                    
+
                 except Exception as e:
                     errors.append(f"{os.path.basename(file)}: {str(e)}")
             
@@ -268,9 +268,14 @@ class AIChatManager:
             self.status_var.set(f"已导入 {min(i+batch_size, len(files))}/{len(files)}...")
             self.root.update_idletasks()
         
+        # 按时间降序排列（最新对话在前）
+        self.all_conversations.sort(
+            key=lambda c: c.get('time', '') or '', reverse=True
+        )
+
         self.refresh_conversation_list()
         self.update_stats()
-        
+
         # 清空搜索缓存
         self.search_cache.clear()
         
@@ -528,6 +533,7 @@ class AIChatManager:
                 'content': content,
                 'sender':  '我' if sender == 'human' else 'Claude',
             })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
         return msg_list
 
     # ── Gemini ────────────────────────────────────────────────
