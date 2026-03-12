@@ -113,11 +113,16 @@ class AIChatManager:
         # ========== 主要内容区 ==========
         main_container = tk.Frame(self.root, bg='#faf7f2')
         main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
+
+        # 可拖动三栏分隔
+        paned = tk.PanedWindow(main_container, orient=tk.HORIZONTAL,
+                               sashwidth=5, sashrelief=tk.FLAT,
+                               bg='#e0e0e0')
+        paned.pack(fill=tk.BOTH, expand=True)
+
         # 左侧：对话列表
-        left_panel = tk.Frame(main_container, bg='white', width=250)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 5))
-        left_panel.pack_propagate(False)
+        left_panel = tk.Frame(paned, bg='white', width=250)
+        paned.add(left_panel, minsize=150, stretch='never')
         
         tk.Label(left_panel, text="📋 我的对话", bg='white',
                 font=('Microsoft YaHei', 11, 'bold')).pack(anchor=tk.W, padx=10, pady=10)
@@ -144,8 +149,8 @@ class AIChatManager:
         scrollbar.config(command=self.conv_listbox.yview)
         
         # 中间：对话详情
-        mid_panel = tk.Frame(main_container, bg='white')
-        mid_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        mid_panel = tk.Frame(paned, bg='white')
+        paned.add(mid_panel, minsize=300, stretch='always')
         mid_panel.rowconfigure(1, weight=1)
         mid_panel.columnconfigure(0, weight=1)
 
@@ -183,9 +188,8 @@ class AIChatManager:
         self.msg_text.pack(fill=tk.BOTH, expand=True)
         
         # 右侧：快捷操作
-        right_panel = tk.Frame(main_container, bg='white', width=200)
-        right_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
-        right_panel.pack_propagate(False)
+        right_panel = tk.Frame(paned, bg='white', width=200)
+        paned.add(right_panel, minsize=150, stretch='never')
         
         tk.Label(right_panel, text="⚡ 快捷操作", bg='white',
                 font=('Microsoft YaHei', 11, 'bold')).pack(anchor=tk.W, padx=10, pady=10)
