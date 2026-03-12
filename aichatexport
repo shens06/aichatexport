@@ -263,108 +263,252 @@ class AIChatManager:
     
     def detect_platform(self, filename, data):
         """智能识别AI平台"""
-        filename_lower = filename.lower()
-        
-        # 平台特征库
+        filename_lower = os.path.basename(filename).lower()
+
+        def first_mapping_msg(d):
+            """返回列表型数据第一个对话里第一个有效 mapping 节点的 message"""
+            if not (isinstance(d, list) and d and isinstance(d[0], dict)):
+                return {}
+            for v in d[0].get('mapping', {}).values():
+                if isinstance(v, dict) and isinstance(v.get('message'), dict):
+                    return v['message']
+            return {}
+
         platform_signatures = {
+            # DeepSeek: mapping 节点含 fragments 字段
             'DeepSeek': {
                 'keywords': ['deepseek', '深度求索'],
-                'structure': lambda d: isinstance(d, list) and len(d) > 0 and 'mapping' in d[0] if isinstance(d, list) else False
+                'structure': lambda d: 'fragments' in first_mapping_msg(d),
             },
+            # ChatGPT: mapping 节点含 author 字段，或导出为 {"conversations": [...]}
             'ChatGPT': {
                 'keywords': ['chatgpt', 'openai', 'gpt'],
-                'structure': lambda d: isinstance(d, dict) and 'conversations' in d
+                'structure': lambda d: (
+                    'author' in first_mapping_msg(d)
+                    or (isinstance(d, dict) and 'conversations' in d)
+                ),
             },
+            # Claude: 列表元素含 chat_messages，或 {"threads": [...]}
             'Claude': {
                 'keywords': ['claude', 'anthropic'],
-                'structure': lambda d: isinstance(d, dict) and 'threads' in d
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict) and 'chat_messages' in d[0]
+                ) or (isinstance(d, dict) and 'threads' in d),
             },
+            # Gemini: 列表元素含 messages 且无 mapping（与 ChatGPT/DeepSeek 区分）
             'Gemini': {
                 'keywords': ['gemini', 'bard', 'google'],
-                'structure': lambda d: isinstance(d, list) and len(d) > 0 and 'messages' in d[0]
-            }
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
         }
-        
-        # 先按文件名判断
-        for platform, sig in platform_signatures.items():
-            if any(kw in filename_lower for kw in sig['keywords']):
-                # 验证数据结构
-                if sig['structure'](data):
-                    return platform
-        
-        # 再按数据结构判断
-        for platform, sig in platform_signatures.items():
-            if sig['structure'](data):
-                return platform
-        
+
+        # 先按文件名判断，再按数据结构判断
+        for pass_num in range(2):
+            for platform, sig in platform_signatures.items():
+                if pass_num == 0 and not any(kw in filename_lower for kw in sig['keywords']):
+                    continue
+                try:
+                    if sig['structure'](data):
+                        return platform
+                except Exception:
+                    continue
+
         return '未知平台'
-    
+
     def extract_conversations(self, data, platform, source_file):
-        """提取对话（根据不同平台）"""
+        """提取对话，按平台分发"""
+        dispatch = {
+            'DeepSeek': self._extract_deepseek_convs,
+            'ChatGPT':  self._extract_chatgpt_convs,
+            'Claude':   self._extract_claude_convs,
+            'Gemini':   self._extract_gemini_convs,
+        }
+        handler = dispatch.get(platform)
+        return handler(data, source_file) if handler else []
+
+    # ── 通用工具 ──────────────────────────────────────────────
+
+    def _ts_to_str(self, ts):
+        """Unix 时间戳（float/int）→ 可读字符串"""
+        if not ts:
+            return ''
+        try:
+            return datetime.fromtimestamp(float(ts)).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return ''
+
+    def _fmt_iso(self, time_str):
+        """ISO 8601 字符串 → 统一格式，去掉时区"""
+        if not time_str:
+            return ''
+        try:
+            time_str = time_str.replace('Z', '+00:00')
+            if 'T' in time_str:
+                dt = datetime.fromisoformat(time_str)
+            else:
+                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+            return dt.replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return time_str
+
+    # ── DeepSeek ──────────────────────────────────────────────
+
+    def _extract_deepseek_convs(self, data, source_file):
         conversations = []
-        file_hash = hashlib.md5(source_file.encode()).hexdigest()[:8]
-        
-        if platform == 'DeepSeek':
-            if isinstance(data, list):
-                for i, item in enumerate(data):
-                    if isinstance(item, dict) and 'title' in item:
-                        conv = {
-                            'id': f"deepseek_{uuid.uuid4().hex}",
-                            'title': item.get('title', f'对话{i+1}'),
-                            'platform': 'DeepSeek',
-                            'time': item.get('inserted_at', ''),
-                            'messages': self.extract_deepseek_messages(item),
-                            'source': source_file
-                        }
-                        conversations.append(conv)
-        
-        # 这里可以添加其他平台的解析逻辑
-        
+        if not isinstance(data, list):
+            return conversations
+        for item in data:
+            if isinstance(item, dict) and 'title' in item:
+                conversations.append({
+                    'id':       f"deepseek_{uuid.uuid4().hex}",
+                    'title':    item.get('title', '无标题'),
+                    'platform': 'DeepSeek',
+                    'time':     self._fmt_iso(item.get('inserted_at', '')),
+                    'messages': self._extract_deepseek_messages(item),
+                    'source':   source_file,
+                })
         return conversations
-    
-    def extract_deepseek_messages(self, conv_data):
-        """提取DeepSeek消息"""
-        messages = []
-        
-        if 'mapping' not in conv_data:
-            return messages
-        
-        # 收集所有消息
+
+    def _extract_deepseek_messages(self, conv_data):
         msg_list = []
-        for node in conv_data['mapping'].values():
-            if isinstance(node, dict) and node.get('message'):
-                msg_data = node['message']
-                fragments = msg_data.get('fragments', [])
-                
-                for f in fragments:
-                    if isinstance(f, dict) and f.get('content'):
-                        content = f['content'].strip()
-                        if content:
-                            msg_type = f.get('type', 'UNKNOWN')
-                            time_str = msg_data.get('inserted_at', '')
-                            
-                            # 格式化时间
-                            try:
-                                if time_str:
-                                    # 处理不同时间格式
-                                    time_str = time_str.replace('Z', '+00:00')
-                                    if 'T' in time_str:
-                                        dt = datetime.fromisoformat(time_str)
-                                    else:
-                                        dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                                    time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                            except:
-                                pass
-                            
-                            msg_list.append({
-                                'time': time_str,
-                                'type': msg_type,
-                                'content': content,
-                                'sender': '我' if msg_type == 'REQUEST' else 'DeepSeek'
-                            })
-        
-        # 按时间排序，处理空时间
+        for node in conv_data.get('mapping', {}).values():
+            if not (isinstance(node, dict) and node.get('message')):
+                continue
+            msg_data = node['message']
+            for f in msg_data.get('fragments', []):
+                if not (isinstance(f, dict) and f.get('content')):
+                    continue
+                content = f['content'].strip()
+                if not content:
+                    continue
+                msg_type = f.get('type', 'UNKNOWN')
+                msg_list.append({
+                    'time':    self._fmt_iso(msg_data.get('inserted_at', '')),
+                    'type':    msg_type,
+                    'content': content,
+                    'sender':  '我' if msg_type == 'REQUEST' else 'DeepSeek',
+                })
         msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── ChatGPT ───────────────────────────────────────────────
+
+    def _extract_chatgpt_convs(self, data, source_file):
+        items = data if isinstance(data, list) else data.get('conversations', [])
+        conversations = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            conversations.append({
+                'id':       f"chatgpt_{uuid.uuid4().hex}",
+                'title':    item.get('title', '无标题'),
+                'platform': 'ChatGPT',
+                'time':     self._ts_to_str(item.get('create_time')),
+                'messages': self._extract_chatgpt_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_chatgpt_messages(self, conv_data):
+        msg_list = []
+        for node in conv_data.get('mapping', {}).values():
+            if not isinstance(node, dict):
+                continue
+            msg = node.get('message')
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('author', {}).get('role', '')
+            if role not in ('user', 'assistant'):
+                continue
+            parts = msg.get('content', {}).get('parts', [])
+            content = '\n'.join(p for p in parts if isinstance(p, str)).strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._ts_to_str(msg.get('create_time')),
+                'type':    role.upper(),
+                'content': content,
+                'sender':  '我' if role == 'user' else 'ChatGPT',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── Claude ────────────────────────────────────────────────
+
+    def _extract_claude_convs(self, data, source_file):
+        items = data if isinstance(data, list) else data.get('threads', [])
+        conversations = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            conversations.append({
+                'id':       f"claude_{uuid.uuid4().hex}",
+                'title':    item.get('name', item.get('title', '无标题')),
+                'platform': 'Claude',
+                'time':     self._fmt_iso(item.get('created_at', '')),
+                'messages': self._extract_claude_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_claude_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('chat_messages', []):
+            if not isinstance(msg, dict):
+                continue
+            sender = msg.get('sender', '')
+            content = msg.get('text', '').strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._fmt_iso(msg.get('created_at', '')),
+                'type':    sender.upper(),
+                'content': content,
+                'sender':  '我' if sender == 'human' else 'Claude',
+            })
+        return msg_list
+
+    # ── Gemini ────────────────────────────────────────────────
+
+    def _extract_gemini_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            conversations.append({
+                'id':       f"gemini_{uuid.uuid4().hex}",
+                'title':    item.get('title', item.get('name', '无标题')),
+                'platform': 'Gemini',
+                'time':     self._fmt_iso(item.get('create_time', item.get('created_at', ''))),
+                'messages': self._extract_gemini_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_gemini_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', msg.get('author', ''))
+            content = msg.get('content', msg.get('text', ''))
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._fmt_iso(msg.get('create_time', msg.get('timestamp', ''))),
+                'type':    role.upper(),
+                'content': content,
+                'sender':  '我' if role in ('user', 'human') else 'Gemini',
+            })
         return msg_list
     
     def refresh_conversation_list(self):
