@@ -26,10 +26,35 @@ class AIChatManager:
         self.filtered_indices = []    # 搜索过滤后的索引
         self.search_history = []      # 搜索历史
         self.search_cache = {}        # 搜索缓存
-        
+
+        # 设置文件与程序同目录
+        self.settings_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'aichatexport_settings.json'
+        )
+        self._load_settings()
+
         self.setup_ui()
         self.center_window()
     
+    def _load_settings(self):
+        """从文件加载收藏列表"""
+        try:
+            with open(self.settings_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.favorites = set(data.get('favorites', []))
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.favorites = set()
+
+    def _save_settings(self):
+        """将收藏列表写入文件"""
+        try:
+            with open(self.settings_path, 'w', encoding='utf-8') as f:
+                json.dump({'favorites': list(self.favorites)}, f,
+                          ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 写入失败不影响正常使用
+
     def center_window(self):
         """窗口居中"""
         self.root.update_idletasks()
@@ -356,6 +381,11 @@ class AIChatManager:
 
     # ── 通用工具 ──────────────────────────────────────────────
 
+    def _stable_id(self, platform, title, time_str):
+        """基于内容生成稳定 ID，重新导入同一文件后 ID 不变"""
+        raw = f"{platform}|{title}|{time_str}"
+        return f"{platform.lower()}_{hashlib.md5(raw.encode()).hexdigest()[:16]}"
+
     def _ts_to_str(self, ts):
         """Unix 时间戳（float/int）→ 可读字符串"""
         if not ts:
@@ -387,11 +417,12 @@ class AIChatManager:
             return conversations
         for item in data:
             if isinstance(item, dict) and 'title' in item:
+                t = self._fmt_iso(item.get('inserted_at', ''))
                 conversations.append({
-                    'id':       f"deepseek_{uuid.uuid4().hex}",
+                    'id':       self._stable_id('DeepSeek', item.get('title', ''), t),
                     'title':    item.get('title', '无标题'),
                     'platform': 'DeepSeek',
-                    'time':     self._fmt_iso(item.get('inserted_at', '')),
+                    'time':     t,
                     'messages': self._extract_deepseek_messages(item),
                     'source':   source_file,
                 })
@@ -427,11 +458,12 @@ class AIChatManager:
         for item in items:
             if not isinstance(item, dict):
                 continue
+            t = self._ts_to_str(item.get('create_time'))
             conversations.append({
-                'id':       f"chatgpt_{uuid.uuid4().hex}",
+                'id':       self._stable_id('ChatGPT', item.get('title', ''), t),
                 'title':    item.get('title', '无标题'),
                 'platform': 'ChatGPT',
-                'time':     self._ts_to_str(item.get('create_time')),
+                'time':     t,
                 'messages': self._extract_chatgpt_messages(item),
                 'source':   source_file,
             })
@@ -469,11 +501,13 @@ class AIChatManager:
         for item in items:
             if not isinstance(item, dict):
                 continue
+            title = item.get('name', item.get('title', '无标题'))
+            t = self._fmt_iso(item.get('created_at', ''))
             conversations.append({
-                'id':       f"claude_{uuid.uuid4().hex}",
-                'title':    item.get('name', item.get('title', '无标题')),
+                'id':       self._stable_id('Claude', title, t),
+                'title':    title,
                 'platform': 'Claude',
-                'time':     self._fmt_iso(item.get('created_at', '')),
+                'time':     t,
                 'messages': self._extract_claude_messages(item),
                 'source':   source_file,
             })
@@ -503,11 +537,13 @@ class AIChatManager:
         for item in (data if isinstance(data, list) else []):
             if not isinstance(item, dict):
                 continue
+            title = item.get('title', item.get('name', '无标题'))
+            t = self._fmt_iso(item.get('create_time', item.get('created_at', '')))
             conversations.append({
-                'id':       f"gemini_{uuid.uuid4().hex}",
-                'title':    item.get('title', item.get('name', '无标题')),
+                'id':       self._stable_id('Gemini', title, t),
+                'title':    title,
                 'platform': 'Gemini',
-                'time':     self._fmt_iso(item.get('create_time', item.get('created_at', ''))),
+                'time':     t,
                 'messages': self._extract_gemini_messages(item),
                 'source':   source_file,
             })
@@ -540,12 +576,14 @@ class AIChatManager:
         for item in (data if isinstance(data, list) else []):
             if not isinstance(item, dict):
                 continue
+            title = item.get('title', item.get('name', '无标题'))
+            t = (self._fmt_iso(item.get('create_time', item.get('created_at', '')))
+                 or self._ts_to_str(item.get('create_timestamp')))
             conversations.append({
-                'id':       f"doubao_{uuid.uuid4().hex}",
-                'title':    item.get('title', item.get('name', '无标题')),
+                'id':       self._stable_id('Doubao', title, t),
+                'title':    title,
                 'platform': 'Doubao',
-                'time':     self._fmt_iso(item.get('create_time', item.get('created_at', '')))
-                            or self._ts_to_str(item.get('create_timestamp')),
+                'time':     t,
                 'messages': self._extract_doubao_messages(item),
                 'source':   source_file,
             })
@@ -580,12 +618,14 @@ class AIChatManager:
         for item in (data if isinstance(data, list) else []):
             if not isinstance(item, dict):
                 continue
+            title = item.get('title', item.get('name', '无标题'))
+            t = (self._ts_to_str(item.get('create_time'))
+                 or self._fmt_iso(item.get('created_at', '')))
             conversations.append({
-                'id':       f"kimi_{uuid.uuid4().hex}",
-                'title':    item.get('title', item.get('name', '无标题')),
+                'id':       self._stable_id('Kimi', title, t),
+                'title':    title,
                 'platform': 'Kimi',
-                'time':     (self._ts_to_str(item.get('create_time'))
-                             or self._fmt_iso(item.get('created_at', ''))),
+                'time':     t,
                 'messages': self._extract_kimi_messages(item),
                 'source':   source_file,
             })
@@ -836,6 +876,7 @@ class AIChatManager:
             self.status_var.set("已添加到收藏")
         
         self.update_stats()
+        self._save_settings()
         self.apply_filter()  # 保留当前搜索/筛选状态刷新列表
     
     def update_stats(self):
