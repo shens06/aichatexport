@@ -188,6 +188,7 @@ class AIChatManager:
         # 功能按钮
         actions = [
             ("📄 导出为文本", self.export_txt),
+            ("📦 导出全部", self.export_all),
             ("📊 生成摘要", self.generate_summary),
             ("📎 复制全部", self.copy_all),
             ("🖨️ 打印对话", self.print_conversation),
@@ -947,7 +948,68 @@ class AIChatManager:
                 
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {str(e)}")
-    
+
+    def export_all(self):
+        """将当前列表中所有对话导出为独立 txt 文件"""
+        convs = [self.all_conversations[i] for i in self.filtered_indices]
+        if not convs:
+            messagebox.showwarning("提示", "没有可导出的对话")
+            return
+
+        folder = filedialog.askdirectory(title="选择导出目录")
+        if not folder:
+            return
+
+        ok = 0
+        errors = []
+        total = len(convs)
+
+        self.status_var.set(f"正在导出 0/{total}...")
+        self.root.update_idletasks()
+
+        for idx, conv in enumerate(convs, 1):
+            try:
+                title = conv.get('title', '对话')
+                platform = conv.get('platform', '未知')
+                safe_title = "".join(
+                    c for c in title if c.isalnum() or c in ' -_（）'
+                ).strip() or "对话"
+                # 避免文件名重复：加上序号
+                filename = os.path.join(folder, f"{idx:04d}_{platform}_{safe_title[:40]}.txt")
+
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(f"对话: {title}\n")
+                    f.write(f"平台: {platform}\n")
+                    f.write(f"时间: {conv.get('time', '')}\n")
+                    f.write(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("=" * 50 + "\n\n")
+                    for msg in conv.get('messages', []):
+                        f.write(f"[{msg.get('time', '')}] {msg.get('sender', '')}:\n")
+                        f.write(f"{msg.get('content', '')}\n")
+                        f.write("-" * 30 + "\n\n")
+                ok += 1
+            except Exception as e:
+                errors.append(f"{conv.get('title','')}: {str(e)}")
+
+            if idx % 10 == 0 or idx == total:
+                self.status_var.set(f"正在导出 {idx}/{total}...")
+                self.root.update_idletasks()
+
+        self.status_var.set(f"就绪 - 已导出 {ok}/{total} 个对话")
+
+        msg = f"成功导出 {ok} 个对话到：\n{folder}"
+        if errors:
+            msg += f"\n\n失败 {len(errors)} 个:\n" + "\n".join(errors[:5])
+            messagebox.showwarning("导出完成", msg)
+        else:
+            if messagebox.askyesno("导出完成", msg + "\n\n是否打开导出目录？"):
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
+
     def generate_summary(self):
         """生成摘要"""
         if not self.current_conv:
