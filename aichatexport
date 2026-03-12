@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import hashlib
-import gc
 from datetime import datetime, date
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -136,19 +135,19 @@ class AIChatManager:
         msg_frame = tk.Frame(mid_panel, bg='#f0f0f0')
         msg_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        # 消息画布
-        self.canvas = tk.Canvas(msg_frame, bg='#f0f0f0', highlightthickness=0)
-        scrollbar_y = tk.Scrollbar(msg_frame, orient=tk.VERTICAL, command=self.canvas.yview)
-        
-        self.messages_frame = tk.Frame(self.canvas, bg='#f0f0f0')
-        self.messages_frame.bind("<Configure>", 
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        
-        self.canvas.create_window((0, 0), window=self.messages_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=scrollbar_y.set)
-        
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        # 消息显示（Text widget，性能远优于逐条创建控件）
+        self.msg_text = scrolledtext.ScrolledText(msg_frame, wrap=tk.WORD,
+                                                   font=('Microsoft YaHei', 9),
+                                                   bg='#f0f0f0', bd=0,
+                                                   state=tk.DISABLED)
+        self.msg_text.tag_config('time', foreground='#999', font=('Microsoft YaHei', 8),
+                                  justify='center')
+        self.msg_text.tag_config('sender_me', foreground='#333',
+                                  font=('Microsoft YaHei', 9, 'bold'))
+        self.msg_text.tag_config('sender_ai', foreground='#0066cc',
+                                  font=('Microsoft YaHei', 9, 'bold'))
+        self.msg_text.tag_config('divider', foreground='#cccccc')
+        self.msg_text.pack(fill=tk.BOTH, expand=True)
         
         # 右侧：快捷操作
         right_panel = tk.Frame(main_container, bg='white', width=200)
@@ -444,10 +443,10 @@ class AIChatManager:
                 self.add_to_list(conv)
                 matches += 1
             
-            # 每100个对话更新一次状态
+            # 每100个对话更新一次状态（用update_idletasks避免处理点击等事件）
             if i % 100 == 0:
                 self.status_var.set(f"搜索中... {i}/{len(self.all_conversations)}")
-                self.root.update()
+                self.root.update_idletasks()
         
         # 记录搜索历史
         if keyword not in self.search_history:
@@ -537,75 +536,36 @@ class AIChatManager:
         else:
             self.fav_btn.config(text="☆ 收藏")
         
-        # 清空消息区
-        for widget in self.messages_frame.winfo_children():
-            widget.destroy()
-        
-        # 显示消息
+        # 清空并填充消息
+        self.msg_text.config(state=tk.NORMAL)
+        self.msg_text.delete(1.0, tk.END)
+
         messages = self.current_conv.get('messages', [])
         for msg in messages:
-            self.create_message_bubble(msg)
-        
-        # 自动滚动到底部
-        self.root.after(100, lambda: self.canvas.yview_moveto(1.0))
-        
+            self.insert_message(msg)
+
+        self.msg_text.config(state=tk.DISABLED)
+        self.msg_text.see(tk.END)
+
         # 更新统计
         self.update_stats()
-        
-        # 强制垃圾回收
-        gc.collect()
     
-    def create_message_bubble(self, msg):
-        """创建消息气泡"""
-        frame = tk.Frame(self.messages_frame, bg='#f0f0f0')
-        frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        # 时间显示
-        time_label = tk.Label(frame, text=msg.get('time', ''), 
-                             bg='#f0f0f0', fg='#999',
-                             font=('Microsoft YaHei', 8))
-        time_label.pack(anchor='center')
-        
-        # 消息内容
-        is_me = msg.get('sender') == '我'
+    def insert_message(self, msg):
+        """插入消息到文本框"""
+        sender = msg.get('sender', 'AI')
+        time_str = msg.get('time', '')
         content = msg.get('content', '')
-        
-        # 限制消息长度
+
         if len(content) > 10000:
             content = content[:10000] + "...\n\n[消息过长，已截断]"
-        
-        # 计算合适的宽度
-        max_width = min(400, self.root.winfo_width() // 2)
-        
-        if is_me:
-            # 我的消息（右对齐）
-            content_frame = tk.Frame(frame, bg='#f0f0f0')
-            content_frame.pack(anchor='e')
-            
-            bubble = tk.Message(content_frame, 
-                               text=content,
-                               bg='#95ec69',
-                               font=('Microsoft YaHei', 9),
-                               width=max_width,
-                               padx=10, pady=8)
-            bubble.pack(side=tk.RIGHT)
-        else:
-            # AI消息（左对齐）
-            sender_label = tk.Label(frame, text=msg.get('sender', 'AI'),
-                                   bg='#f0f0f0', fg='#666',
-                                   font=('Microsoft YaHei', 9, 'bold'))
-            sender_label.pack(anchor='w')
-            
-            content_frame = tk.Frame(frame, bg='#f0f0f0')
-            content_frame.pack(anchor='w')
-            
-            bubble = tk.Message(content_frame,
-                               text=content,
-                               bg='white',
-                               font=('Microsoft YaHei', 9),
-                               width=max_width,
-                               padx=10, pady=8)
-            bubble.pack(side=tk.LEFT)
+
+        if time_str:
+            self.msg_text.insert(tk.END, f"{time_str}\n", 'time')
+
+        tag = 'sender_me' if sender == '我' else 'sender_ai'
+        self.msg_text.insert(tk.END, f"{sender}:\n", tag)
+        self.msg_text.insert(tk.END, f"{content}\n")
+        self.msg_text.insert(tk.END, "─" * 40 + "\n\n", 'divider')
     
     def toggle_favorite(self):
         """切换收藏状态"""
