@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import subprocess
 import time
 import hashlib
 from datetime import datetime, date
@@ -493,14 +494,16 @@ class AIChatManager:
                         dt = datetime.strptime(conv_time[:10], '%Y-%m-%d')
                     else:
                         dt = datetime.min
-                    
+                    # 统一去掉时区，避免 aware/naive 混用 TypeError
+                    dt = dt.replace(tzinfo=None)
+
                     if filter_by == "今天":
                         include = dt.date() == today
                     elif filter_by == "本周":
                         include = (now - dt).days <= 7
                     elif filter_by == "本月":
                         include = dt.month == now.month and dt.year == now.year
-                except:
+                except Exception:
                     include = False
             
             if include:
@@ -590,7 +593,7 @@ class AIChatManager:
             self.status_var.set("已添加到收藏")
         
         self.update_stats()
-        self.refresh_conversation_list()
+        self.apply_filter()  # 保留当前搜索/筛选状态刷新列表
     
     def update_stats(self):
         """更新统计信息"""
@@ -644,7 +647,13 @@ class AIChatManager:
             
             # 询问是否打开文件
             if messagebox.askyesno("成功", f"已导出到:\n{filename}\n\n是否打开文件所在文件夹？"):
-                os.startfile(os.path.dirname(filename))
+                folder = os.path.dirname(filename)
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
                 
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {str(e)}")
