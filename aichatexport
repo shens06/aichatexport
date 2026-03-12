@@ -4,7 +4,6 @@ import sys
 import subprocess
 import time
 import hashlib
-import uuid
 import zipfile
 import io
 from datetime import datetime, date
@@ -26,7 +25,6 @@ class AIChatManager:
         self.current_conv = None     # 当前查看的对话
         self.favorites = set()        # 收藏的对话ID
         self.filtered_indices = []    # 搜索过滤后的索引
-        self.search_history = []      # 搜索历史
         self.search_cache = {}        # 搜索缓存
 
         # 设置文件与程序同目录
@@ -583,6 +581,7 @@ class AIChatManager:
                 'content': content,
                 'sender':  '我' if role in ('user', 'human') else 'Gemini',
             })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
         return msg_list
 
     # ── 豆包 (Doubao) ─────────────────────────────────────────
@@ -625,6 +624,7 @@ class AIChatManager:
                 'content': content,
                 'sender':  '我' if role in ('user', 'human') else '豆包',
             })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
         return msg_list
 
     # ── Kimi (Moonshot) ───────────────────────────────────────
@@ -667,6 +667,7 @@ class AIChatManager:
                 'content': content,
                 'sender':  '我' if role in ('user', 'human') else 'Kimi',
             })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
         return msg_list
     
     def refresh_conversation_list(self):
@@ -761,12 +762,6 @@ class AIChatManager:
             if i % 100 == 0:
                 self.status_var.set(f"搜索中... {i}/{len(self.all_conversations)}")
                 self.root.update_idletasks()
-        
-        # 记录搜索历史
-        if keyword not in self.search_history:
-            self.search_history.append(keyword)
-            if len(self.search_history) > 10:
-                self.search_history.pop(0)
         
         self.status_var.set(f"找到 {matches} 个匹配的对话")
     
