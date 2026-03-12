@@ -297,8 +297,28 @@ class AIChatManager:
                 ) or (isinstance(d, dict) and 'threads' in d),
             },
             # Gemini: 列表元素含 messages 且无 mapping（与 ChatGPT/DeepSeek 区分）
+            # 也作为通用 messages 格式的兜底（pass 1 无关键词时优先匹配）
             'Gemini': {
                 'keywords': ['gemini', 'bard', 'google'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
+            # 豆包 / Kimi：结构与 Gemini 相同，仅靠文件名关键词区分（放在 Gemini 之后）
+            'Doubao': {
+                'keywords': ['doubao', '豆包'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
+            'Kimi': {
+                'keywords': ['kimi', 'moonshot'],
                 'structure': lambda d: (
                     isinstance(d, list) and bool(d)
                     and isinstance(d[0], dict)
@@ -328,6 +348,8 @@ class AIChatManager:
             'ChatGPT':  self._extract_chatgpt_convs,
             'Claude':   self._extract_claude_convs,
             'Gemini':   self._extract_gemini_convs,
+            'Doubao':   self._extract_doubao_convs,
+            'Kimi':     self._extract_kimi_convs,
         }
         handler = dispatch.get(platform)
         return handler(data, source_file) if handler else []
@@ -508,6 +530,86 @@ class AIChatManager:
                 'type':    role.upper(),
                 'content': content,
                 'sender':  '我' if role in ('user', 'human') else 'Gemini',
+            })
+        return msg_list
+
+    # ── 豆包 (Doubao) ─────────────────────────────────────────
+
+    def _extract_doubao_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            conversations.append({
+                'id':       f"doubao_{uuid.uuid4().hex}",
+                'title':    item.get('title', item.get('name', '无标题')),
+                'platform': 'Doubao',
+                'time':     self._fmt_iso(item.get('create_time', item.get('created_at', '')))
+                            or self._ts_to_str(item.get('create_timestamp')),
+                'messages': self._extract_doubao_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_doubao_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', msg.get('type', ''))
+            content = msg.get('content', msg.get('text', ''))
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            time_str = (self._fmt_iso(msg.get('created_at', ''))
+                        or self._ts_to_str(msg.get('create_time')))
+            msg_list.append({
+                'time':    time_str,
+                'type':    role.upper(),
+                'content': content,
+                'sender':  '我' if role in ('user', 'human') else '豆包',
+            })
+        return msg_list
+
+    # ── Kimi (Moonshot) ───────────────────────────────────────
+
+    def _extract_kimi_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            conversations.append({
+                'id':       f"kimi_{uuid.uuid4().hex}",
+                'title':    item.get('title', item.get('name', '无标题')),
+                'platform': 'Kimi',
+                'time':     (self._ts_to_str(item.get('create_time'))
+                             or self._fmt_iso(item.get('created_at', ''))),
+                'messages': self._extract_kimi_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_kimi_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            time_str = (self._ts_to_str(msg.get('create_time'))
+                        or self._fmt_iso(msg.get('created_at', '')))
+            msg_list.append({
+                'time':    time_str,
+                'type':    role.upper(),
+                'content': content,
+                'sender':  '我' if role in ('user', 'human') else 'Kimi',
             })
         return msg_list
     
