@@ -27,11 +27,12 @@ class AIChatManager:
         self.filtered_indices = []    # 搜索过滤后的索引
         self.search_cache = {}        # 搜索缓存
 
-        # 设置文件与程序同目录
-        self.settings_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            'aichatexport_settings.json'
-        )
+        # 设置文件与程序同目录（兼容 PyInstaller 打包）
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.settings_path = os.path.join(base_dir, 'aichatexport_settings.json')
         self._load_settings()
 
         self.setup_ui()
