@@ -114,26 +114,27 @@ class AIChatManager:
         # 中间：对话详情
         mid_panel = tk.Frame(main_container, bg='white')
         mid_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        
-        # 对话标题栏
-        title_frame = tk.Frame(mid_panel, bg='white', height=40)
-        title_frame.pack(fill=tk.X, padx=10, pady=5)
-        title_frame.pack_propagate(False)
-        
-        self.conv_title = tk.Label(title_frame, text="选择一个对话", 
+        mid_panel.rowconfigure(1, weight=1)
+        mid_panel.columnconfigure(0, weight=1)
+
+        # 对话标题栏（grid row 0，自然高度）
+        title_frame = tk.Frame(mid_panel, bg='white')
+        title_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=5)
+
+        self.conv_title = tk.Label(title_frame, text="选择一个对话",
                                    font=('Microsoft YaHei', 12, 'bold'),
                                    bg='white')
         self.conv_title.pack(side=tk.LEFT)
-        
+
         # 收藏按钮
-        self.fav_btn = tk.Button(title_frame, text="☆ 收藏", 
+        self.fav_btn = tk.Button(title_frame, text="☆ 收藏",
                                  command=self.toggle_favorite,
                                  bg='white', bd=1, relief=tk.SOLID)
         self.fav_btn.pack(side=tk.RIGHT, padx=10)
-        
-        # 消息显示区
+
+        # 消息显示区（grid row 1，占满剩余空间）
         msg_frame = tk.Frame(mid_panel, bg='#f0f0f0')
-        msg_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        msg_frame.grid(row=1, column=0, sticky='nsew', padx=10, pady=(0, 5))
         
         # 消息显示（Text widget，性能远优于逐条创建控件）
         self.msg_text = scrolledtext.ScrolledText(msg_frame, wrap=tk.WORD,
