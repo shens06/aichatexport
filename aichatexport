@@ -5,6 +5,8 @@ import subprocess
 import time
 import hashlib
 import uuid
+import zipfile
+import io
 from datetime import datetime, date
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -950,59 +952,73 @@ class AIChatManager:
             messagebox.showerror("错误", f"导出失败: {str(e)}")
 
     def export_all(self):
-        """将当前列表中所有对话导出为独立 txt 文件"""
+        """将当前列表中所有对话打包为一个 ZIP 文件"""
         convs = [self.all_conversations[i] for i in self.filtered_indices]
         if not convs:
             messagebox.showwarning("提示", "没有可导出的对话")
             return
 
-        folder = filedialog.askdirectory(title="选择导出目录")
-        if not folder:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_path = filedialog.asksaveasfilename(
+            title="保存 ZIP 文件",
+            defaultextension=".zip",
+            filetypes=[("ZIP 文件", "*.zip")],
+            initialfile=f"聊天记录_{timestamp}.zip",
+        )
+        if not zip_path:
             return
 
         ok = 0
         errors = []
         total = len(convs)
+        export_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         self.status_var.set(f"正在导出 0/{total}...")
         self.root.update_idletasks()
 
-        for idx, conv in enumerate(convs, 1):
-            try:
-                title = conv.get('title', '对话')
-                platform = conv.get('platform', '未知')
-                safe_title = "".join(
-                    c for c in title if c.isalnum() or c in ' -_（）'
-                ).strip() or "对话"
-                # 避免文件名重复：加上序号
-                filename = os.path.join(folder, f"{idx:04d}_{platform}_{safe_title[:40]}.txt")
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for idx, conv in enumerate(convs, 1):
+                    try:
+                        title = conv.get('title', '对话')
+                        platform = conv.get('platform', '未知')
+                        safe_title = "".join(
+                            c for c in title if c.isalnum() or c in ' -_（）'
+                        ).strip() or "对话"
+                        entry_name = f"{idx:04d}_{platform}_{safe_title[:40]}.txt"
 
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(f"对话: {title}\n")
-                    f.write(f"平台: {platform}\n")
-                    f.write(f"时间: {conv.get('time', '')}\n")
-                    f.write(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write("=" * 50 + "\n\n")
-                    for msg in conv.get('messages', []):
-                        f.write(f"[{msg.get('time', '')}] {msg.get('sender', '')}:\n")
-                        f.write(f"{msg.get('content', '')}\n")
-                        f.write("-" * 30 + "\n\n")
-                ok += 1
-            except Exception as e:
-                errors.append(f"{conv.get('title','')}: {str(e)}")
+                        buf = io.StringIO()
+                        buf.write(f"对话: {title}\n")
+                        buf.write(f"平台: {platform}\n")
+                        buf.write(f"时间: {conv.get('time', '')}\n")
+                        buf.write(f"导出时间: {export_time}\n")
+                        buf.write("=" * 50 + "\n\n")
+                        for msg in conv.get('messages', []):
+                            buf.write(f"[{msg.get('time', '')}] {msg.get('sender', '')}:\n")
+                            buf.write(f"{msg.get('content', '')}\n")
+                            buf.write("-" * 30 + "\n\n")
 
-            if idx % 10 == 0 or idx == total:
-                self.status_var.set(f"正在导出 {idx}/{total}...")
-                self.root.update_idletasks()
+                        zf.writestr(entry_name, buf.getvalue().encode('utf-8'))
+                        ok += 1
+                    except Exception as e:
+                        errors.append(f"{conv.get('title', '')}: {str(e)}")
+
+                    if idx % 10 == 0 or idx == total:
+                        self.status_var.set(f"正在导出 {idx}/{total}...")
+                        self.root.update_idletasks()
+        except Exception as e:
+            messagebox.showerror("错误", f"创建 ZIP 失败: {str(e)}")
+            return
 
         self.status_var.set(f"就绪 - 已导出 {ok}/{total} 个对话")
 
-        msg = f"成功导出 {ok} 个对话到：\n{folder}"
+        msg = f"成功导出 {ok} 个对话\n保存至：{zip_path}"
         if errors:
             msg += f"\n\n失败 {len(errors)} 个:\n" + "\n".join(errors[:5])
             messagebox.showwarning("导出完成", msg)
         else:
-            if messagebox.askyesno("导出完成", msg + "\n\n是否打开导出目录？"):
+            if messagebox.askyesno("导出完成", msg + "\n\n是否打开所在文件夹？"):
+                folder = os.path.dirname(zip_path)
                 if sys.platform == 'win32':
                     os.startfile(folder)
                 elif sys.platform == 'darwin':
