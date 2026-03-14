@@ -196,6 +196,7 @@ class AIChatManager:
         # 功能按钮
         actions = [
             ("📄 导出为文本", self.export_txt),
+            ("📝 导出为 Markdown", self.export_md),
             ("📦 导出全部", self.export_all),
             ("📊 生成摘要", self.generate_summary),
             ("📎 复制全部", self.copy_all),
@@ -964,6 +965,61 @@ class AIChatManager:
                 else:
                     subprocess.run(['xdg-open', folder])
                 
+        except Exception as e:
+            messagebox.showerror("错误", f"导出失败: {str(e)}")
+
+    def export_md(self):
+        """导出当前对话为 Markdown 文件"""
+        if not self.current_conv:
+            messagebox.showwarning("提示", "请先选择一个对话")
+            return
+
+        title = self.current_conv.get('title', '对话')
+        safe_title = "".join(c for c in title if c.isalnum() or c in ' -_（）').strip()
+        if not safe_title:
+            safe_title = "对话"
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".md",
+            filetypes=[("Markdown 文件", "*.md")],
+            initialfile=f"{safe_title}_{timestamp}.md"
+        )
+
+        if not filename:
+            return
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# {self.current_conv.get('title', '对话')}\n\n")
+                f.write(f"**平台:** {self.current_conv.get('platform', '')}  \n")
+                f.write(f"**时间:** {self.current_conv.get('time', '')}  \n")
+                f.write(f"**导出时间:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n\n")
+                f.write("---\n\n")
+
+                for msg in self.current_conv.get('messages', []):
+                    sender = msg.get('sender', 'AI')
+                    time_str = msg.get('time', '')
+                    content = msg.get('content', '')
+
+                    if time_str:
+                        f.write(f"<sub>{time_str}</sub>\n\n")
+                    f.write(f"**{sender}:**\n\n")
+                    f.write(f"{content}\n\n")
+                    f.write("---\n\n")
+
+            self.status_var.set(f"已导出到: {os.path.basename(filename)}")
+
+            if messagebox.askyesno("成功", f"已导出到:\n{filename}\n\n是否打开文件所在文件夹？"):
+                folder = os.path.dirname(filename)
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
+
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {str(e)}")
 

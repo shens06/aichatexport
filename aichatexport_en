@@ -183,6 +183,7 @@ class AIChatManager:
 
         actions = [
             ("📄 Export as Text", self.export_txt),
+            ("📝 Export as Markdown", self.export_md),
             ("📦 Export All", self.export_all),
             ("📊 Generate Summary", self.generate_summary),
             ("📎 Copy All", self.copy_all),
@@ -893,6 +894,61 @@ class AIChatManager:
                     f.write(f"[{msg.get('time')}] {msg.get('sender')}:\n")
                     f.write(f"{msg.get('content')}\n")
                     f.write("-"*30 + "\n\n")
+
+            self.status_var.set(f"Exported to: {os.path.basename(filename)}")
+
+            if messagebox.askyesno("Success", f"Exported to:\n{filename}\n\nOpen containing folder?"):
+                folder = os.path.dirname(filename)
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+
+    def export_md(self):
+        """Export current conversation as a Markdown file"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        title = self.current_conv.get('title', 'conversation')
+        safe_title = "".join(c for c in title if c.isalnum() or c in ' -_').strip()
+        if not safe_title:
+            safe_title = "conversation"
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".md",
+            filetypes=[("Markdown Files", "*.md")],
+            initialfile=f"{safe_title}_{timestamp}.md"
+        )
+
+        if not filename:
+            return
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# {self.current_conv.get('title', 'conversation')}\n\n")
+                f.write(f"**Platform:** {self.current_conv.get('platform', '')}  \n")
+                f.write(f"**Time:** {self.current_conv.get('time', '')}  \n")
+                f.write(f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n\n")
+                f.write("---\n\n")
+
+                for msg in self.current_conv.get('messages', []):
+                    sender = msg.get('sender', 'AI')
+                    time_str = msg.get('time', '')
+                    content = msg.get('content', '')
+
+                    if time_str:
+                        f.write(f"<sub>{time_str}</sub>\n\n")
+                    f.write(f"**{sender}:**\n\n")
+                    f.write(f"{content}\n\n")
+                    f.write("---\n\n")
 
             self.status_var.set(f"Exported to: {os.path.basename(filename)}")
 
