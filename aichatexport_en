@@ -1,0 +1,1143 @@
+import json
+import os
+import sys
+import subprocess
+import time
+import hashlib
+import zipfile
+import io
+from datetime import datetime, date
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+class AIChatManager:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AI Chat Manager - Keep All AI Conversations Organized")
+        self.root.geometry("1200x700")
+
+        self.root.configure(bg='#faf7f2')
+        self.accent_color = '#ff7b2b'
+
+        self.all_conversations = []
+        self.current_conv = None
+        self.favorites = set()
+        self.filtered_indices = []
+        self.search_cache = {}
+
+        # Settings file next to the executable (PyInstaller compatible)
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.settings_path = os.path.join(base_dir, 'aichatexport_settings.json')
+        self._load_settings()
+
+        self.setup_ui()
+        self.center_window()
+
+    def _load_settings(self):
+        """Load favorites list from file"""
+        try:
+            with open(self.settings_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.favorites = set(data.get('favorites', []))
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.favorites = set()
+
+    def _save_settings(self):
+        """Write favorites list to file"""
+        try:
+            with open(self.settings_path, 'w', encoding='utf-8') as f:
+                json.dump({'favorites': list(self.favorites)}, f,
+                          ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def center_window(self):
+        """Center the window on screen"""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+
+    def setup_ui(self):
+        """Three-column layout"""
+
+        # ========== Top toolbar ==========
+        toolbar = tk.Frame(self.root, bg='white', height=60)
+        toolbar.pack(fill=tk.X, padx=0, pady=0)
+        toolbar.pack_propagate(False)
+
+        logo_label = tk.Label(toolbar, text="📚 AI Chat Manager",
+                              font=('Segoe UI', 16, 'bold'),
+                              bg='white', fg=self.accent_color)
+        logo_label.pack(side=tk.LEFT, padx=20)
+
+        import_btn = tk.Button(toolbar, text="📥 Import Chats",
+                               command=self.import_files,
+                               bg=self.accent_color, fg='white',
+                               font=('Segoe UI', 10),
+                               padx=20, pady=5, bd=0)
+        import_btn.pack(side=tk.LEFT, padx=10)
+
+        search_frame = tk.Frame(toolbar, bg='white')
+        search_frame.pack(side=tk.LEFT, padx=20)
+
+        tk.Label(search_frame, text="🔍", bg='white',
+                font=('Segoe UI', 12)).pack(side=tk.LEFT)
+
+        self.search_var = tk.StringVar()
+        self.search_var.trace('w', self.on_search)
+        search_entry = tk.Entry(search_frame, textvariable=self.search_var,
+                                font=('Segoe UI', 10),
+                                width=30, bd=1, relief=tk.SOLID)
+        search_entry.pack(side=tk.LEFT, padx=5)
+
+        self.filter_var = tk.StringVar(value="All")
+        filter_combo = ttk.Combobox(search_frame, textvariable=self.filter_var,
+                                    values=["All", "Today", "This Week", "This Month", "Favorites"],
+                                    width=10, state="readonly")
+        filter_combo.pack(side=tk.LEFT, padx=5)
+        filter_combo.bind('<<ComboboxSelected>>', self.apply_filter)
+
+        # ========== Main content area ==========
+        main_container = tk.Frame(self.root, bg='#faf7f2')
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        paned = tk.PanedWindow(main_container, orient=tk.HORIZONTAL,
+                               sashwidth=5, sashrelief=tk.FLAT,
+                               bg='#e0e0e0')
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # Left: conversation list
+        left_panel = tk.Frame(paned, bg='white', width=250)
+        paned.add(left_panel, minsize=150, stretch='never')
+
+        tk.Label(left_panel, text="📋 My Conversations", bg='white',
+                font=('Segoe UI', 11, 'bold')).pack(anchor=tk.W, padx=10, pady=10)
+
+        list_frame = tk.Frame(left_panel, bg='white')
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=5)
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.conv_listbox = tk.Listbox(list_frame,
+                                       yscrollcommand=scrollbar.set,
+                                       font=('Segoe UI', 9),
+                                       bd=0, highlightthickness=0,
+                                       selectbackground='#fff0e6',
+                                       selectforeground='black')
+        self.conv_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.conv_listbox.bind('<<ListboxSelect>>', self.on_select_conversation)
+        self.conv_listbox.bind('<Motion>', self._on_list_motion)
+        self.conv_listbox.bind('<Leave>', lambda e: self.status_var.set(
+            f"Ready - {len(self.all_conversations)} conversations"))
+
+        scrollbar.config(command=self.conv_listbox.yview)
+
+        # Center: conversation detail
+        mid_panel = tk.Frame(paned, bg='white')
+        paned.add(mid_panel, minsize=300, stretch='always')
+        mid_panel.rowconfigure(1, weight=1)
+        mid_panel.columnconfigure(0, weight=1)
+
+        title_frame = tk.Frame(mid_panel, bg='white')
+        title_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=5)
+
+        self.conv_title = tk.Label(title_frame, text="Select a conversation",
+                                   font=('Segoe UI', 12, 'bold'),
+                                   bg='white')
+        self.conv_title.pack(side=tk.LEFT)
+
+        self.fav_btn = tk.Button(title_frame, text="☆ Favorite",
+                                 command=self.toggle_favorite,
+                                 bg='white', bd=1, relief=tk.SOLID)
+        self.fav_btn.pack(side=tk.RIGHT, padx=10)
+
+        msg_frame = tk.Frame(mid_panel, bg='#f0f0f0')
+        msg_frame.grid(row=1, column=0, sticky='nsew', padx=10, pady=(0, 5))
+
+        self.msg_text = scrolledtext.ScrolledText(msg_frame, wrap=tk.WORD,
+                                                   font=('Segoe UI', 9),
+                                                   bg='#f0f0f0', bd=0,
+                                                   state=tk.DISABLED)
+        self.msg_text.tag_config('time', foreground='#999', font=('Segoe UI', 8),
+                                  justify='center')
+        self.msg_text.tag_config('sender_me', foreground='#333',
+                                  font=('Segoe UI', 9, 'bold'))
+        self.msg_text.tag_config('sender_ai', foreground='#0066cc',
+                                  font=('Segoe UI', 9, 'bold'))
+        self.msg_text.tag_config('divider', foreground='#cccccc')
+        self.msg_text.pack(fill=tk.BOTH, expand=True)
+
+        # Right: quick actions
+        right_panel = tk.Frame(paned, bg='white', width=200)
+        paned.add(right_panel, minsize=150, stretch='never')
+
+        tk.Label(right_panel, text="⚡ Quick Actions", bg='white',
+                font=('Segoe UI', 11, 'bold')).pack(anchor=tk.W, padx=10, pady=10)
+
+        actions = [
+            ("📄 Export as Text", self.export_txt),
+            ("📦 Export All", self.export_all),
+            ("📊 Generate Summary", self.generate_summary),
+            ("📎 Copy All", self.copy_all),
+            ("🖨️ Print", self.print_conversation),
+        ]
+
+        for text, cmd in actions:
+            btn = tk.Button(right_panel, text=text, command=cmd,
+                           bg='white', bd=1, relief=tk.SOLID,
+                           font=('Segoe UI', 9),
+                           pady=8)
+            btn.pack(fill=tk.X, padx=10, pady=2)
+
+        stats_frame = tk.Frame(right_panel, bg='#f8f8f8')
+        stats_frame.pack(fill=tk.X, padx=10, pady=20)
+
+        self.stats_text = tk.Label(stats_frame,
+                                   text="📊 Stats\nConversations: 0\nMessages: 0\nFavorites: 0",
+                                   bg='#f8f8f8', justify=tk.LEFT,
+                                   font=('Segoe UI', 9))
+        self.stats_text.pack(padx=10, pady=10)
+
+        self.status_var = tk.StringVar(value="Ready")
+        status_bar = tk.Label(self.root, textvariable=self.status_var,
+                              bg='#e0e0e0', anchor=tk.W,
+                              font=('Segoe UI', 9))
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def import_files(self):
+        """Import one or more chat export files"""
+        files = filedialog.askopenfilenames(
+            title="Select Chat Export Files",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+
+        if not files:
+            return
+
+        self.status_var.set("Importing...")
+        self.root.update_idletasks()
+
+        imported = 0
+        errors = []
+
+        batch_size = 3
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i+batch_size]
+            for file in batch:
+                try:
+                    data = None
+                    for encoding in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312']:
+                        try:
+                            with open(file, 'r', encoding=encoding) as f:
+                                data = json.load(f)
+                            break
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+
+                    if data is None:
+                        errors.append(f"{os.path.basename(file)}: Unable to parse file")
+                        continue
+
+                    platform = self.detect_platform(file, data)
+                    convs = self.extract_conversations(data, platform, file)
+                    self.all_conversations.extend(convs)
+                    imported += len(convs)
+
+                except Exception as e:
+                    errors.append(f"{os.path.basename(file)}: {str(e)}")
+
+            self.status_var.set(f"Imported {min(i+batch_size, len(files))}/{len(files)}...")
+            self.root.update_idletasks()
+
+        self.all_conversations.sort(
+            key=lambda c: c.get('time', '') or '', reverse=True
+        )
+
+        self.refresh_conversation_list()
+        self.update_stats()
+        self.search_cache.clear()
+
+        if errors:
+            error_msg = "\n".join(errors[:5])
+            if len(errors) > 5:
+                error_msg += f"\n...and {len(errors)} errors total"
+            messagebox.showwarning("Partial Success",
+                                  f"Imported {imported} conversations\n\nFailed {len(errors)}:\n{error_msg}")
+        else:
+            messagebox.showinfo("Success", f"Imported {imported} conversations!")
+
+        self.status_var.set(f"Ready - {len(self.all_conversations)} conversations")
+
+    def detect_platform(self, filename, data):
+        """Auto-detect AI platform from file name and structure"""
+        filename_lower = os.path.basename(filename).lower()
+
+        def first_mapping_msg(d):
+            if not (isinstance(d, list) and d and isinstance(d[0], dict)):
+                return {}
+            for v in d[0].get('mapping', {}).values():
+                if isinstance(v, dict) and isinstance(v.get('message'), dict):
+                    return v['message']
+            return {}
+
+        platform_signatures = {
+            'DeepSeek': {
+                'keywords': ['deepseek'],
+                'structure': lambda d: 'fragments' in first_mapping_msg(d),
+            },
+            'ChatGPT': {
+                'keywords': ['chatgpt', 'openai', 'gpt'],
+                'structure': lambda d: (
+                    'author' in first_mapping_msg(d)
+                    or (isinstance(d, dict) and 'conversations' in d)
+                ),
+            },
+            'Claude': {
+                'keywords': ['claude', 'anthropic'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict) and 'chat_messages' in d[0]
+                ) or (isinstance(d, dict) and 'threads' in d),
+            },
+            'Gemini': {
+                'keywords': ['gemini', 'bard', 'google'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
+            'Doubao': {
+                'keywords': ['doubao'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
+            'Kimi': {
+                'keywords': ['kimi', 'moonshot'],
+                'structure': lambda d: (
+                    isinstance(d, list) and bool(d)
+                    and isinstance(d[0], dict)
+                    and 'messages' in d[0]
+                    and 'mapping' not in d[0]
+                ),
+            },
+        }
+
+        for pass_num in range(2):
+            for platform, sig in platform_signatures.items():
+                if pass_num == 0 and not any(kw in filename_lower for kw in sig['keywords']):
+                    continue
+                try:
+                    if sig['structure'](data):
+                        return platform
+                except Exception:
+                    continue
+
+        return 'Unknown'
+
+    def extract_conversations(self, data, platform, source_file):
+        """Dispatch extraction by platform"""
+        dispatch = {
+            'DeepSeek': self._extract_deepseek_convs,
+            'ChatGPT':  self._extract_chatgpt_convs,
+            'Claude':   self._extract_claude_convs,
+            'Gemini':   self._extract_gemini_convs,
+            'Doubao':   self._extract_doubao_convs,
+            'Kimi':     self._extract_kimi_convs,
+        }
+        handler = dispatch.get(platform)
+        return handler(data, source_file) if handler else []
+
+    # ── Utilities ─────────────────────────────────────────────
+
+    def _stable_id(self, platform, title, time_str):
+        raw = f"{platform}|{title}|{time_str}"
+        return f"{platform.lower()}_{hashlib.md5(raw.encode()).hexdigest()[:16]}"
+
+    def _ts_to_str(self, ts):
+        if not ts:
+            return ''
+        try:
+            return datetime.fromtimestamp(float(ts)).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return ''
+
+    def _fmt_iso(self, time_str):
+        if not time_str:
+            return ''
+        try:
+            time_str = time_str.replace('Z', '+00:00')
+            if 'T' in time_str:
+                dt = datetime.fromisoformat(time_str)
+            else:
+                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+            return dt.replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return time_str
+
+    # ── DeepSeek ──────────────────────────────────────────────
+
+    def _extract_deepseek_convs(self, data, source_file):
+        conversations = []
+        if not isinstance(data, list):
+            return conversations
+        for item in data:
+            if isinstance(item, dict) and 'title' in item:
+                t = self._fmt_iso(item.get('inserted_at', ''))
+                conversations.append({
+                    'id':       self._stable_id('DeepSeek', item.get('title', ''), t),
+                    'title':    item.get('title', 'Untitled'),
+                    'platform': 'DeepSeek',
+                    'time':     t,
+                    'messages': self._extract_deepseek_messages(item),
+                    'source':   source_file,
+                })
+        return conversations
+
+    def _extract_deepseek_messages(self, conv_data):
+        msg_list = []
+        for node in conv_data.get('mapping', {}).values():
+            if not (isinstance(node, dict) and node.get('message')):
+                continue
+            msg_data = node['message']
+            for f in msg_data.get('fragments', []):
+                if not (isinstance(f, dict) and f.get('content')):
+                    continue
+                content = f['content'].strip()
+                if not content:
+                    continue
+                msg_type = f.get('type', 'UNKNOWN')
+                msg_list.append({
+                    'time':    self._fmt_iso(msg_data.get('inserted_at', '')),
+                    'type':    msg_type,
+                    'content': content,
+                    'sender':  'Me' if msg_type == 'REQUEST' else 'DeepSeek',
+                })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── ChatGPT ───────────────────────────────────────────────
+
+    def _extract_chatgpt_convs(self, data, source_file):
+        items = data if isinstance(data, list) else data.get('conversations', [])
+        conversations = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            t = self._ts_to_str(item.get('create_time'))
+            conversations.append({
+                'id':       self._stable_id('ChatGPT', item.get('title', ''), t),
+                'title':    item.get('title', 'Untitled'),
+                'platform': 'ChatGPT',
+                'time':     t,
+                'messages': self._extract_chatgpt_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_chatgpt_messages(self, conv_data):
+        msg_list = []
+        for node in conv_data.get('mapping', {}).values():
+            if not isinstance(node, dict):
+                continue
+            msg = node.get('message')
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('author', {}).get('role', '')
+            if role not in ('user', 'assistant'):
+                continue
+            parts = msg.get('content', {}).get('parts', [])
+            content = '\n'.join(p for p in parts if isinstance(p, str)).strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._ts_to_str(msg.get('create_time')),
+                'type':    role.upper(),
+                'content': content,
+                'sender':  'Me' if role == 'user' else 'ChatGPT',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── Claude ────────────────────────────────────────────────
+
+    def _extract_claude_convs(self, data, source_file):
+        items = data if isinstance(data, list) else data.get('threads', [])
+        conversations = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = item.get('name', item.get('title', 'Untitled'))
+            t = self._fmt_iso(item.get('created_at', ''))
+            conversations.append({
+                'id':       self._stable_id('Claude', title, t),
+                'title':    title,
+                'platform': 'Claude',
+                'time':     t,
+                'messages': self._extract_claude_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_claude_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('chat_messages', []):
+            if not isinstance(msg, dict):
+                continue
+            sender = msg.get('sender', '')
+            content = msg.get('text', '').strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._fmt_iso(msg.get('created_at', '')),
+                'type':    sender.upper(),
+                'content': content,
+                'sender':  'Me' if sender == 'human' else 'Claude',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── Gemini ────────────────────────────────────────────────
+
+    def _extract_gemini_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            title = item.get('title', item.get('name', 'Untitled'))
+            t = self._fmt_iso(item.get('create_time', item.get('created_at', '')))
+            conversations.append({
+                'id':       self._stable_id('Gemini', title, t),
+                'title':    title,
+                'platform': 'Gemini',
+                'time':     t,
+                'messages': self._extract_gemini_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_gemini_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', msg.get('author', ''))
+            content = msg.get('content', msg.get('text', ''))
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            msg_list.append({
+                'time':    self._fmt_iso(msg.get('create_time', msg.get('timestamp', ''))),
+                'type':    role.upper(),
+                'content': content,
+                'sender':  'Me' if role in ('user', 'human') else 'Gemini',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── Doubao ────────────────────────────────────────────────
+
+    def _extract_doubao_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            title = item.get('title', item.get('name', 'Untitled'))
+            t = (self._fmt_iso(item.get('create_time', item.get('created_at', '')))
+                 or self._ts_to_str(item.get('create_timestamp')))
+            conversations.append({
+                'id':       self._stable_id('Doubao', title, t),
+                'title':    title,
+                'platform': 'Doubao',
+                'time':     t,
+                'messages': self._extract_doubao_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_doubao_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', msg.get('type', ''))
+            content = msg.get('content', msg.get('text', ''))
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            time_str = (self._fmt_iso(msg.get('created_at', ''))
+                        or self._ts_to_str(msg.get('create_time')))
+            msg_list.append({
+                'time':    time_str,
+                'type':    role.upper(),
+                'content': content,
+                'sender':  'Me' if role in ('user', 'human') else 'Doubao',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    # ── Kimi (Moonshot) ───────────────────────────────────────
+
+    def _extract_kimi_convs(self, data, source_file):
+        conversations = []
+        for item in (data if isinstance(data, list) else []):
+            if not isinstance(item, dict):
+                continue
+            title = item.get('title', item.get('name', 'Untitled'))
+            t = (self._ts_to_str(item.get('create_time'))
+                 or self._fmt_iso(item.get('created_at', '')))
+            conversations.append({
+                'id':       self._stable_id('Kimi', title, t),
+                'title':    title,
+                'platform': 'Kimi',
+                'time':     t,
+                'messages': self._extract_kimi_messages(item),
+                'source':   source_file,
+            })
+        return conversations
+
+    def _extract_kimi_messages(self, conv_data):
+        msg_list = []
+        for msg in conv_data.get('messages', []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                content = '\n'.join(str(p) for p in content if p)
+            content = str(content).strip()
+            if not content:
+                continue
+            time_str = (self._ts_to_str(msg.get('create_time'))
+                        or self._fmt_iso(msg.get('created_at', '')))
+            msg_list.append({
+                'time':    time_str,
+                'type':    role.upper(),
+                'content': content,
+                'sender':  'Me' if role in ('user', 'human') else 'Kimi',
+            })
+        msg_list.sort(key=lambda x: x.get('time', '') or '')
+        return msg_list
+
+    def refresh_conversation_list(self):
+        """Refresh the conversation list"""
+        self.conv_listbox.delete(0, tk.END)
+        self.filtered_indices = []
+
+        for i, conv in enumerate(self.all_conversations):
+            self.filtered_indices.append(i)
+            self.add_to_list(conv)
+
+    _PLATFORM_ABBR = {
+        'ChatGPT': 'GPT', 'DeepSeek': 'DS', 'Claude': 'CL',
+        'Gemini': 'GM', 'Doubao': 'DB', 'Kimi': 'Kimi',
+    }
+
+    def add_to_list(self, conv):
+        """Add conversation to listbox"""
+        title = conv.get('title', 'Untitled')
+        platform = conv.get('platform', 'Unknown')
+        abbr = self._PLATFORM_ABBR.get(platform, platform[:4])
+
+        if len(title) > 22:
+            title = title[:20] + "…"
+
+        display = f"[{abbr}] {title}"
+
+        if conv.get('id') in self.favorites:
+            display = "⭐ " + display
+
+        self.conv_listbox.insert(tk.END, display)
+
+    def _on_list_motion(self, event):
+        """Show full title and date in status bar on hover"""
+        idx = self.conv_listbox.nearest(event.y)
+        if 0 <= idx < len(self.filtered_indices):
+            conv = self.all_conversations[self.filtered_indices[idx]]
+            title = conv.get('title', '')
+            t = conv.get('time', '')[:10]
+            self.status_var.set(f"{conv.get('platform','')}  {t}  {title}")
+
+    def conversation_matches(self, conv, keyword):
+        """Check if conversation matches keyword (with cache)"""
+        conv_id = conv.get('id', '')
+        cache_key = f"{conv_id}_{keyword}"
+
+        if cache_key in self.search_cache:
+            return self.search_cache[cache_key]
+
+        if keyword in conv.get('title', '').lower():
+            self.search_cache[cache_key] = True
+            return True
+
+        for msg in conv.get('messages', []):
+            if keyword in msg.get('content', '').lower():
+                self.search_cache[cache_key] = True
+                return True
+
+        self.search_cache[cache_key] = False
+        return False
+
+    def on_search(self, *args):
+        """Live search"""
+        keyword = self.search_var.get().strip().lower()
+
+        self.conv_listbox.delete(0, tk.END)
+        self.filtered_indices = []
+
+        if not keyword:
+            for i, conv in enumerate(self.all_conversations):
+                self.filtered_indices.append(i)
+                self.add_to_list(conv)
+            self.status_var.set(f"Showing all {len(self.all_conversations)} conversations")
+            return
+
+        matches = 0
+        for i, conv in enumerate(self.all_conversations):
+            if self.conversation_matches(conv, keyword):
+                self.filtered_indices.append(i)
+                self.add_to_list(conv)
+                matches += 1
+
+            if i % 100 == 0:
+                self.status_var.set(f"Searching... {i}/{len(self.all_conversations)}")
+                self.root.update_idletasks()
+
+        self.status_var.set(f"Found {matches} matching conversations")
+
+    def apply_filter(self, event=None):
+        """Apply date/favorites filter"""
+        filter_by = self.filter_var.get()
+        keyword = self.search_var.get().strip().lower()
+
+        self.conv_listbox.delete(0, tk.END)
+        self.filtered_indices = []
+
+        now = datetime.now()
+        today = date.today()
+        matches = 0
+
+        for i, conv in enumerate(self.all_conversations):
+            if keyword and not self.conversation_matches(conv, keyword):
+                continue
+
+            conv_time = conv.get('time', '')
+            include = False
+
+            if filter_by == "All":
+                include = True
+            elif filter_by == "Favorites":
+                include = conv.get('id') in self.favorites
+            elif conv_time:
+                try:
+                    conv_time = conv_time.replace('Z', '+00:00')
+                    if 'T' in conv_time:
+                        dt = datetime.fromisoformat(conv_time)
+                    elif ' ' in conv_time:
+                        dt = datetime.strptime(conv_time[:10], '%Y-%m-%d')
+                    else:
+                        dt = datetime.min
+                    dt = dt.replace(tzinfo=None)
+
+                    if filter_by == "Today":
+                        include = dt.date() == today
+                    elif filter_by == "This Week":
+                        include = (now - dt).days <= 7
+                    elif filter_by == "This Month":
+                        include = dt.month == now.month and dt.year == now.year
+                except Exception:
+                    include = False
+
+            if include:
+                self.filtered_indices.append(i)
+                self.add_to_list(conv)
+                matches += 1
+
+        self.status_var.set(f"Showing {matches} conversations")
+
+    def on_select_conversation(self, event):
+        """Show conversation detail on selection"""
+        selection = self.conv_listbox.curselection()
+        if not selection:
+            return
+
+        list_idx = selection[0]
+        if list_idx >= len(self.filtered_indices):
+            return
+
+        conv_idx = self.filtered_indices[list_idx]
+        if conv_idx >= len(self.all_conversations):
+            return
+
+        self.current_conv = self.all_conversations[conv_idx]
+
+        self.conv_title.config(text=self.current_conv.get('title', 'Untitled'))
+
+        conv_id = self.current_conv.get('id')
+        if conv_id and conv_id in self.favorites:
+            self.fav_btn.config(text="★ Favorited")
+        else:
+            self.fav_btn.config(text="☆ Favorite")
+
+        self.msg_text.config(state=tk.NORMAL)
+        self.msg_text.delete(1.0, tk.END)
+
+        messages = self.current_conv.get('messages', [])
+        for msg in messages:
+            self.insert_message(msg)
+
+        self.msg_text.config(state=tk.DISABLED)
+        self.msg_text.see(tk.END)
+
+        self.update_stats()
+
+    def insert_message(self, msg):
+        """Insert a message into the text widget"""
+        sender = msg.get('sender', 'AI')
+        time_str = msg.get('time', '')
+        content = msg.get('content', '')
+
+        if len(content) > 10000:
+            content = content[:10000] + "...\n\n[Message truncated - too long]"
+
+        if time_str:
+            self.msg_text.insert(tk.END, f"{time_str}\n", 'time')
+
+        tag = 'sender_me' if sender == 'Me' else 'sender_ai'
+        self.msg_text.insert(tk.END, f"{sender}:\n", tag)
+        self.msg_text.insert(tk.END, f"{content}\n")
+        self.msg_text.insert(tk.END, "─" * 40 + "\n\n", 'divider')
+
+    def toggle_favorite(self):
+        """Toggle favorite status"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        if 'id' not in self.current_conv or not self.current_conv['id']:
+            self.current_conv['id'] = f"temp_{time.time()}_{hash(str(self.current_conv))}"
+
+        conv_id = self.current_conv['id']
+
+        if conv_id in self.favorites:
+            self.favorites.remove(conv_id)
+            self.fav_btn.config(text="☆ Favorite")
+            self.status_var.set("Removed from favorites")
+        else:
+            self.favorites.add(conv_id)
+            self.fav_btn.config(text="★ Favorited")
+            self.status_var.set("Added to favorites")
+
+        self.update_stats()
+        self._save_settings()
+        self.apply_filter()
+
+    def update_stats(self):
+        """Update statistics panel"""
+        total_convs = len(self.all_conversations)
+        total_msgs = sum(len(c.get('messages', [])) for c in self.all_conversations)
+        fav_count = len(self.favorites)
+
+        self.stats_text.config(
+            text=f"📊 Stats\nConversations: {total_convs}\nMessages: {total_msgs}\nFavorites: {fav_count}"
+        )
+
+    def export_txt(self):
+        """Export current conversation as text file"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        title = self.current_conv.get('title', 'conversation')
+        safe_title = "".join(c for c in title if c.isalnum() or c in ' -_').strip()
+        if not safe_title:
+            safe_title = "conversation"
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_title = f"{safe_title}_{timestamp}"
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt")],
+            initialfile=f"{safe_title}.txt"
+        )
+
+        if not filename:
+            return
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"Title: {self.current_conv.get('title')}\n")
+                f.write(f"Platform: {self.current_conv.get('platform')}\n")
+                f.write(f"Time: {self.current_conv.get('time')}\n")
+                f.write(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("="*50 + "\n\n")
+
+                for msg in self.current_conv.get('messages', []):
+                    f.write(f"[{msg.get('time')}] {msg.get('sender')}:\n")
+                    f.write(f"{msg.get('content')}\n")
+                    f.write("-"*30 + "\n\n")
+
+            self.status_var.set(f"Exported to: {os.path.basename(filename)}")
+
+            if messagebox.askyesno("Success", f"Exported to:\n{filename}\n\nOpen containing folder?"):
+                folder = os.path.dirname(filename)
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+
+    def export_all(self):
+        """Export all visible conversations as a ZIP file"""
+        convs = [self.all_conversations[i] for i in self.filtered_indices]
+        if not convs:
+            messagebox.showwarning("Notice", "No conversations to export")
+            return
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_path = filedialog.asksaveasfilename(
+            title="Save ZIP File",
+            defaultextension=".zip",
+            filetypes=[("ZIP Files", "*.zip")],
+            initialfile=f"chat_export_{timestamp}.zip",
+        )
+        if not zip_path:
+            return
+
+        ok = 0
+        errors = []
+        total = len(convs)
+        export_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        self.status_var.set(f"Exporting 0/{total}...")
+        self.root.update_idletasks()
+
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for idx, conv in enumerate(convs, 1):
+                    try:
+                        title = conv.get('title', 'conversation')
+                        platform = conv.get('platform', 'Unknown')
+                        safe_title = "".join(
+                            c for c in title if c.isalnum() or c in ' -_'
+                        ).strip() or "conversation"
+                        entry_name = f"{idx:04d}_{platform}_{safe_title[:40]}.txt"
+
+                        buf = io.StringIO()
+                        buf.write(f"Title: {title}\n")
+                        buf.write(f"Platform: {platform}\n")
+                        buf.write(f"Time: {conv.get('time', '')}\n")
+                        buf.write(f"Exported: {export_time}\n")
+                        buf.write("=" * 50 + "\n\n")
+                        for msg in conv.get('messages', []):
+                            buf.write(f"[{msg.get('time', '')}] {msg.get('sender', '')}:\n")
+                            buf.write(f"{msg.get('content', '')}\n")
+                            buf.write("-" * 30 + "\n\n")
+
+                        zf.writestr(entry_name, buf.getvalue().encode('utf-8'))
+                        ok += 1
+                    except Exception as e:
+                        errors.append(f"{conv.get('title', '')}: {str(e)}")
+
+                    if idx % 10 == 0 or idx == total:
+                        self.status_var.set(f"Exporting {idx}/{total}...")
+                        self.root.update_idletasks()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create ZIP: {str(e)}")
+            return
+
+        self.status_var.set(f"Ready - exported {ok}/{total} conversations")
+
+        msg = f"Exported {ok} conversations\nSaved to: {zip_path}"
+        if errors:
+            msg += f"\n\nFailed {len(errors)}:\n" + "\n".join(errors[:5])
+            messagebox.showwarning("Export Complete", msg)
+        else:
+            if messagebox.askyesno("Export Complete", msg + "\n\nOpen containing folder?"):
+                folder = os.path.dirname(zip_path)
+                if sys.platform == 'win32':
+                    os.startfile(folder)
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', folder])
+                else:
+                    subprocess.run(['xdg-open', folder])
+
+    def generate_summary(self):
+        """Generate a summary for the current conversation"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        messages = self.current_conv.get('messages', [])
+        if not messages:
+            messagebox.showinfo("Notice", "This conversation has no messages")
+            return
+
+        my_msgs = [m for m in messages if m.get('sender') == 'Me']
+        ai_msgs = [m for m in messages if m.get('sender') != 'Me']
+
+        total_chars = sum(len(m.get('content', '')) for m in messages)
+        avg_len = total_chars // len(messages) if messages else 0
+
+        times = [m.get('time', '') for m in messages if m.get('time')]
+        start_time = min(times) if times else 'Unknown'
+        end_time = max(times) if times else 'Unknown'
+
+        summary = f"""
+📊 Conversation Summary
+━━━━━━━━━━━━━━━━━━
+Title: {self.current_conv.get('title')}
+Platform: {self.current_conv.get('platform')}
+Time range: {start_time} to {end_time}
+
+📝 Statistics
+• Total messages: {len(messages)}
+• My messages: {len(my_msgs)}
+• AI messages: {len(ai_msgs)}
+• Total characters: {total_chars}
+• Avg length: {avg_len} chars/msg
+
+💬 Message ratio
+• Me: {len(my_msgs)/len(messages)*100:.1f}%
+• AI: {len(ai_msgs)/len(messages)*100:.1f}%
+
+📌 Last 5 messages:
+"""
+
+        for i, msg in enumerate(messages[-5:]):
+            content = msg.get('content', '')[:50]
+            if len(msg.get('content', '')) > 50:
+                content += "..."
+            summary += f"{i+1}. {msg.get('sender')}: {content}\n"
+
+        top = tk.Toplevel(self.root)
+        top.title("Conversation Summary")
+        top.geometry("550x500")
+        top.transient(self.root)
+        top.grab_set()
+
+        text_frame = tk.Frame(top)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        text = tk.Text(text_frame, wrap=tk.WORD, font=('Segoe UI', 10),
+                      yscrollcommand=scrollbar.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar.config(command=text.yview)
+
+        text.insert(tk.END, summary)
+        text.config(state=tk.DISABLED)
+
+        btn_frame = tk.Frame(top)
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Button(btn_frame, text="Copy Summary",
+                 command=lambda: self.copy_to_clipboard(summary)).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Close", command=top.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def copy_all(self):
+        """Copy all messages to clipboard"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        content = ""
+        for msg in self.current_conv.get('messages', []):
+            content += f"[{msg.get('time')}] {msg.get('sender')}:\n{msg.get('content')}\n\n"
+
+        self.copy_to_clipboard(content)
+        self.status_var.set("Copied to clipboard")
+        messagebox.showinfo("Success", "Copied to clipboard")
+
+    def copy_to_clipboard(self, text):
+        """Copy text to clipboard"""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def print_conversation(self):
+        """Print preview for current conversation"""
+        if not self.current_conv:
+            messagebox.showwarning("Notice", "Please select a conversation first")
+            return
+
+        top = tk.Toplevel(self.root)
+        top.title("Print Preview")
+        top.geometry("600x800")
+        top.transient(self.root)
+
+        toolbar = tk.Frame(top)
+        toolbar.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(toolbar, text="Print",
+                 command=lambda: self.show_print_instructions()).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Page Setup",
+                 command=lambda: messagebox.showinfo("Notice", "Use your browser's print settings")).pack(side=tk.LEFT, padx=2)
+
+        text_frame = tk.Frame(top)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        text = tk.Text(text_frame, wrap=tk.WORD, font=('Segoe UI', 10),
+                      yscrollcommand=scrollbar.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar.config(command=text.yview)
+
+        text.insert(tk.END, f"Title: {self.current_conv.get('title')}\n")
+        text.insert(tk.END, f"Platform: {self.current_conv.get('platform')}\n")
+        text.insert(tk.END, f"Time: {self.current_conv.get('time')}\n")
+        text.insert(tk.END, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        text.insert(tk.END, "="*60 + "\n\n")
+
+        for msg in self.current_conv.get('messages', []):
+            text.insert(tk.END, f"[{msg.get('time')}] {msg.get('sender')}:\n")
+            text.insert(tk.END, f"{msg.get('content')}\n")
+            text.insert(tk.END, "-"*40 + "\n\n")
+
+        text.config(state=tk.DISABLED)
+
+    def show_print_instructions(self):
+        """Show print instructions"""
+        instructions = (
+            "📄 Print Instructions\n\n"
+            "Due to technical limitations, please use the following method:\n\n"
+            "1. In the preview window, press Ctrl+A to select all\n"
+            "2. Press Ctrl+C to copy\n"
+            "3. Open Word, Notepad, or any text editor\n"
+            "4. Press Ctrl+V to paste\n"
+            "5. Use the app's print function (Ctrl+P)\n\n"
+            "Or take a screenshot to save."
+        )
+        messagebox.showinfo("Print Instructions", instructions)
+
+# Run the app
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AIChatManager(root)
+    root.mainloop()
